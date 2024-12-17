@@ -1,0 +1,95 @@
+## Paths of source and target (results) directories. These are top-level directories.
+#  The source path is scanned for all .h5 files there or in sub-directories. Results
+#  file are placed in a directory tree that mirrors that of the source directory.
+paths:
+  ## Absolute path of directory containing source .h5 files
+  # source_files: './brain_organoid_spikes'
+  # source_files: './brain_organoid_spikes/preliminary_ephys_data'
+  # source_files: './brain_organoid_spikes/Run_8_TBS_Experiment'
+  source_files: '/cis/project/organoid/Dec_10_2024/241018/M07915/Stimulation/000295/'
+
+  ## Absolute path of directory where results will be stored
+  # results: './brain_organoid_spikes_ecr_results'
+  # results: './brain_organoid_spikes/preliminary_ephys_data_ecr_results_windowed'
+  # results: './data/brain_organoid_spikes/Run_8_TBS_Experiment_ecr_results'
+  # results: './data/brain_organoid_spikes/TimeCourseData_ecr_results'
+  results: '/cis/project/organoid/Nov_18_2024_ecr_results_for_tuning'
+
+
+## Info about the recording system and channel and/or correlation peak filtering
+data:
+  # Sampling rate of raw signals. Spike time resolution is assumed to be 1/fs
+  fs: 10000
+
+  # Remove spikes with amplitudes below some fixed percentile threshold (from 0 to 100)
+  spike_amp_thresh_percentile: 5
+
+  # Remove correlation peaks with amplitudes below an adaptive threshold.
+  # One of two methods can be used for determining an adaptive threshold.
+  # 1. Set a percentile threshold (a number between 0 and 100).
+  # 2. Compute log-amplitude for all correlation peaks, then set a threshold that is some
+  #    number of standard deviations above the mean.
+  #    amp_threshold = exp( mean(log(amps)) + amp_thresh_std * std(log(amps) )
+  #
+  # If corr_amp_thresh_percentile is set to a number, method 1 will be used.
+  # If corr_amp_thresh_percentile is set to null, then method 2 will be used.
+  corr_amp_thresh_percentile: null
+  corr_amp_thresh_std: 1
+
+
+## Specify durations and overlap of overlapping windows of data to which
+#  Super-selective ECR will be individually applied. Durations are in units
+#  of seconds.
+#  If no windowing is to be used, set win_dur to None.
+windows:
+  win_dur: None
+  # win_dur: 60
+  win_overlap_dur: 0
+
+## Super-selective algorithm configuration parameters, per this paper:
+#   Puppo, Francesca, et al. "Super-selective reconstruction of causal and direct connectivity with
+#   application to in vitro iPSC neuronal networks." Frontiers in Neuroscience 15 (2021): 647877.
+super_sel:
+  # Recompute if results file already exists
+  recompute: False
+  
+  # Each (T, sigma) pair gives a yes/no connection prediction. A connection is declared if
+  # this fraction of (T, sigma) pairs (or higher) gives a yes prediction.
+  adj_threshold: 1.0
+
+  # Based on converation with F. Puppa, she filtered delta/Dirac spikes with rectangular
+  # window of this duration (in seconds), before computing cross-correlation signals, though
+  # this is not described in the paper.
+  raster_dur: 0.0005
+
+  # Use cross-correlation, or use Pearson correlation. Pearson is not currently implemented.
+  corr_type: 'cc'
+
+  # This was not part of the Puppa et al. 2021 paper!
+  # For each cross-correlation signal, keep no more than the largest n_corr_peaks_max peaks.
+  # This is done because many smaller peaks are likely to be noise, and they can severely
+  # slow down the algorithm due to the combinatorial explosion when considering all
+  # possible correlation delay tripets. This filtering is before the population wide
+  # filter that is based on a threshold determined from all correlation peaks, not just
+  # those of a pair of spike signals.
+  n_corr_peaks_max: 4
+
+  # Summed or substracted correlation delays that are within this time window are considered
+  # to be causal. See the paper, equation 5.
+  epsilon: 0.003
+
+  # Spans of the time windows over which correlation delays are computed.
+  T_list: [0.020, 0.0175, 0.016]
+
+  # Standard deviations of the Gaussian filters used to smooth cross-correlation signals
+  sigma_list: [0.0004, 0.00055, 0.0007]
+
+
+  # For reference, default values used on *real* data in Puppa et al. were:
+  # 
+  # adj_threshold: 1.0
+  # raster_dur: 0.0005
+  # corr_type: 'cc'  (Seems they used cc (cross-correlation in the paper, but Pearson in their MATLAB code))
+  # epsilon: 0.003
+  # T_list: np.array([0.020, 0.0175, 0.016])
+  # sigma_list: np.array([0.0004, 0.00055, 0.0007])
