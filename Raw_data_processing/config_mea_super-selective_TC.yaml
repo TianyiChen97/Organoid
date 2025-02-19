@@ -6,14 +6,14 @@ paths:
   # source_files: './brain_organoid_spikes'
   # source_files: './brain_organoid_spikes/preliminary_ephys_data'
   # source_files: './brain_organoid_spikes/Run_8_TBS_Experiment'
-  source_files: '/cis/project/organoid/Dec_10_2024/241018/M07915/Stimulation/000295/'
+  source_files: '/cis/project/organoid/Dec_10_2024/'
 
   ## Absolute path of directory where results will be stored
   # results: './brain_organoid_spikes_ecr_results'
   # results: './brain_organoid_spikes/preliminary_ephys_data_ecr_results_windowed'
   # results: './data/brain_organoid_spikes/Run_8_TBS_Experiment_ecr_results'
   # results: './data/brain_organoid_spikes/TimeCourseData_ecr_results'
-  results: '/cis/project/organoid/Nov_18_2024_ecr_results_for_tuning'
+  results: '/cis/project/organoid/Dec_10_2024_ecr_results_no_window'
 
 
 ## Info about the recording system and channel and/or correlation peak filtering
