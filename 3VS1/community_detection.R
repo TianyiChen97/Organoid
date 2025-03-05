@@ -2,6 +2,7 @@ library('randnet')
 library('igraph')
 library(irlba)
 library(mclust)
+library(irlba)
 
 ##ASE for a network A with embedding dimension d
 full.ase <- function(A, d, diagaug=TRUE, doptr=FALSE) {
@@ -98,11 +99,10 @@ getElbows <- function(dat, n = 3, threshold = FALSE, plot = TRUE, main="") {
   return(q)
 }
 
-doMclustASE = function(g, dmax=100, Kmax =20  ) {
+doMclustASE = function(g, dmax=100) {
   #pacman::p_load(irlba, gmmase, mclust)
-  
   n = vcount(g)
-  #Kmax = n/2
+  Kmax = n/2
   ase = full.ase(g, d=dmax, diagaug=TRUE, doptr=FALSE)
   elb = getElbows(ase$eval, plot=F)
   #dhat = max(elb[1],2)
@@ -118,7 +118,7 @@ edge_list = read.csv('/Users/tianyichen/Desktop/Research /PhDresearch/Hopkins_Or
 filenames = unique(edge_list$File)
 
 # Define the threshold for density
-density_threshold <- 0.001  # Adjust as needed
+density_threshold <- 0.01  # Adjust as needed
 
 # Initialize a data frame to store the summary
 summary_table <- data.frame(
@@ -173,12 +173,20 @@ for (file in filenames) {
     
     sample_graph = sparse_matrix
     # Estimate the number of communities using BHMC
+    g <- graph_from_adjacency_matrix(sparse_matrix, weighted = NULL, mode = "directed", diag = FALSE)
     
-    g <- graph_from_adjacency_matrix(sparse_matrix, weighted = NULL, mode = "undirected", diag = FALSE)
+    components <- igraph::clusters(g, mode="strong")
+    biggest_cluster_id <- which.max(components$csize)
+    vert_ids <- V(g)[components$membership == biggest_cluster_id]
+
+    g <- igraph::induced_subgraph(g, vert_ids)
+    n = vcount(g)
+    
+    #g <- graph_from_adjacency_matrix(sparse_matrix, weighted = NULL, mode = "undirected", diag = FALSE)
     
     bhmc <- tryCatch({
       #print(c(file,well))
-      as.numeric(BHMC.estimate(g[], 20 )$K)[1]
+      as.numeric(BHMC.estimate(g[], n/2 )$K)[1]
     }, error = function(e) {
       NA  # If an error occurs, set bhmc to NA
     })
@@ -186,12 +194,12 @@ for (file in filenames) {
     # Estimate number of communities using ASE GMM with error handling
     CEPYP <- tryCatch({
       #print(c(file,well))
-      as.numeric(doMclustASE(g, dmax = 100, Kmax = 1 ))[1]
+      as.numeric(doMclustASE(g, dmax = 100))[1]
     }, error = function(e) {
       NA  # If an error occurs, set CEPYP to NA
     })
     
-    #print(c( file, well, n_rows, density ,bhmc, CEPYP))
+    print(c( n, density ,bhmc, CEPYP))
 
     # Add the result to the summary table
     summary_table <- rbind(summary_table, data.frame(
@@ -206,10 +214,6 @@ for (file in filenames) {
   }
 }
 
-library(irlba)
-
-
-
 
 
 # Add a new column for group based on whether the filename contains "M07914" or "M07915"
@@ -217,27 +221,46 @@ summary_table$Group <- ifelse(grepl("M07914", summary_table$File), "M07914",
                               ifelse(grepl("M07915", summary_table$File), "M07915", NA))
 
 # Remove rows with NA in Num_Communities or Group
-filtered_table <- subset(summary_table, !is.na(Num_Communities) & !is.na(Group))
+filtered_table <- subset(summary_table, !is.na(Num_Communities_BHMC) & !is.na(Group))
 
 # Split into two groups
 group_1 <- subset(filtered_table, Group == "M07914")
 group_2 <- subset(filtered_table, Group == "M07915")
 
-# Compute summary statistics for each group
-group_1_mean <- mean(group_1$Num_Communities)
-group_2_mean <- mean(group_2$Num_Communities)
 
-group_1_median <- median(group_1$Num_Communities)
-group_2_median <- median(group_2$Num_Communities)
+#Single organoid plate – M07914 
+#Multi-organoid plate – M07915 
+
+# Compute summary statistics for each group
+group_1_mean <- mean(group_1$Num_Communities_BHMC)
+group_2_mean <- mean(group_2$Num_Communities_BHMC)
+
+group_1_median <- median(group_1$Num_Communities_BHMC)
+group_2_median <- median(group_2$Num_Communities_BHMC)
+
 
 # Print summary statistics
 cat("Group M07914: Mean =", group_1_mean, ", Median =", group_1_median, "\n")
 cat("Group M07915: Mean =", group_2_mean, ", Median =", group_2_median, "\n")
 
+
 wilcox.test(group_1$Num_Communities, group_2$Num_Communities)
 
 
+group_1_mean <- mean(group_1$Num_Communities_ASE_GMM)
+group_2_mean <- mean(group_2$Num_Communities_ASE_GMM)
 
+group_1_median <- median(group_1$Num_Communities_ASE_GMM)
+group_2_median <- median(group_2$Num_Communities_ASE_GMM)
+
+
+# Print summary statistics
+cat("Group M07914: Mean =", group_1_mean, ", Median =", group_1_median, "\n")
+cat("Group M07915: Mean =", group_2_mean, ", Median =", group_2_median, "\n")
+
+
+
+hist(group_1$Num_Communities_ASE_GMM, breaks = 30)
 
 bhmc
 
