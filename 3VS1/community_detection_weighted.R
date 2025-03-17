@@ -52,7 +52,7 @@ plot_GMM_contours <- function(mc) {
     theme_minimal() +
     scale_color_brewer(palette = "Set1")
 }
-full.ase <- function(A, d, diagaug=TRUE, doptr=FALSE) {
+full.ase <- function(A, d, diagaug=TRUE, doptr=FALSE, spoke = F, spoke_coef = 0.002) {
   require(RSpectra)
   
   # doptr
@@ -68,6 +68,10 @@ full.ase <- function(A, d, diagaug=TRUE, doptr=FALSE) {
     diag(A) <- rowSums(A) / (nrow(A)-1)
   }
   
+  if ( spoke ) {
+    A <- A + spoke_coef 
+  }
+  #print(A)
   A.svd <- svds(A,k=d)
   Xhat <- A.svd$u %*% diag(sqrt(A.svd$d))
   Xhat.R <- NULL
@@ -155,11 +159,11 @@ getElbows <- function(dat, n = 3, threshold = FALSE, plot = TRUE, main="") {
   
   return(q)
 }
-doMclustASE_directed = function(g, dmax=100) {
+doMclustASE_directed = function(g, dmax=100 , sk = T , s_c = 0.002 ) {
   #pacman::p_load(irlba, gmmase, mclust)
   n = vcount(g)
   Kmax = n/5
-  ase = full.ase(g, d=dmax, diagaug=TRUE, doptr=FALSE)
+  ase = full.ase(g, d=dmax, diagaug=TRUE, doptr=FALSE ,  spoke = sk, spoke_coef = s_c)
   elb = getElbows(ase$eval, plot=F)
   #dhat = max(elb[1],2)
   dhat = elb[1]
@@ -169,6 +173,21 @@ doMclustASE_directed = function(g, dmax=100) {
   Khat = mc$G
   return( list(mc=mc,Khat=Khat) )
 }
+doMclustASE_directed_spoke = function(g, dmax=100) {
+  #pacman::p_load(irlba, gmmase, mclust)
+  n = vcount(g)
+  Kmax = n/5
+  ase = full.ase(g, d=dmax, diagaug=TRUE, doptr=FALSE ,  spoke = T, spoke_coef = 0.002)
+  elb = getElbows(ase$eval, plot=F)
+  #dhat = max(elb[1],2)
+  dhat = elb[1]
+  Xhat = cbind(ase$Xhat[,1:dhat],ase$Xhat.R[,1:dhat])
+  #Xhat = ase$Xhat[,1:dhat]
+  mc = Mclust(Xhat, G=2:Kmax, verbose=T)
+  Khat = mc$G
+  return( list(mc=mc,Khat=Khat) )
+}
+
 stage1 <- c('000297', '000289')
 stage2 <- c('000298', '000290')
 stage3 <- c('000300', '000293')

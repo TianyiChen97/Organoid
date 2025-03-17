@@ -7,6 +7,9 @@ output:
     code_folding: hide
 ---
 
+
+## https://tianyichen97.github.io/Organoid/3VS1/pre.html
+
 ### Q: whether there is number of communities difference between single organoid(M07914) and multiple organoid(M07915)?
 
 ## Basic information. 
@@ -55,9 +58,10 @@ Below are detailed info about what filename indicates:
     000295 (folder where data from during stimulation #2 (single region location of stim electrodes) h5 file is located) 
     
   
-## Functions
 
 ```{r, message=FALSE, warning=FALSE}
+## Functions 
+
 library('randnet')
 library(irlba)
 library(mclust)
@@ -260,7 +264,7 @@ scree_plot_tc <- function(kk){
 
   
   
-## Data processing  
+## Data processing and the summary table
 
 Below we show the summary table which contains filename, well, stage, group(M07914 or M07915), number of nodes, num of edges and GMM+BIC results for communitiy detection and BHMC results.
 

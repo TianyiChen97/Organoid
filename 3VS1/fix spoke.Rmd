@@ -1,0 +1,219 @@
+---
+title: "fixing spoke"
+author: "Tianyi Chen"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+---
+
+## Original directed graph version. 
+We pick one graph for example. 
+https://tianyichen97.github.io/Organoid/3VS1/fix spoke.html 
+```{r, message=FALSE, fig.cap= "Left: Scree plot for the original unweighted and directed graph. The first elbow is at dhat=1. Right: Plot of ASE embedding for the directed graph: first scaled left singular vector against first scaled right singular vector, indicating a clear eigenspoke" }
+
+library('randnet')
+library(irlba)
+library(mclust)
+library(igraph)
+library(ggplot2)
+library(MASS)
+library(mvtnorm)
+library(dplyr)
+
+getElbows <- function(dat, n = 3, threshold = FALSE, plot = TRUE, main="") {
+  if (is.matrix(dat)) {
+    d <- sort(apply(dat,2,sd), decreasing=TRUE)
+  } else {
+    d <- sort(dat,decreasing=TRUE)
+  }
+  
+  if (!is.logical(threshold))
+    d <- d[d > threshold]
+  
+  p <- length(d)
+  if (p == 0)
+    stop(paste("d must have elements that are larger than the threshold ",
+               threshold), "!", sep="")
+  
+  lq <- rep(0.0, p)                     # log likelihood, function of q
+  for (q in 1:p) {
+    mu1 <- mean(d[1:q])
+    mu2 <- mean(d[-(1:q)])              # = NaN when q = p
+    sigma2 <- (sum((d[1:q] - mu1)^2) + sum((d[-(1:q)] - mu2)^2)) /
+      (p - 1 - (q < p))
+    lq[q] <- sum( dnorm(  d[1:q ], mu1, sqrt(sigma2), log=TRUE) ) +
+      sum( dnorm(d[-(1:q)], mu2, sqrt(sigma2), log=TRUE) )
+  }
+  
+  q <- which.max(lq)
+  if (n > 1 && q < (p-1)) {
+    q <- c(q, q + getElbows(d[(q+1):p], n-1, plot=FALSE))
+  }
+  
+  if (plot==TRUE) {
+    if (is.matrix(dat)) {
+      sdv <- d # apply(dat,2,sd)
+      plot(sdv,type="b",xlab="dim",ylab="stdev",main=main)
+      points(q,sdv[q],col=2,pch=19)
+    } else {
+      plot(dat, type="b",main=main)
+      points(q,dat[q],col=2,pch=19)
+    }
+  }
+  
+  return(q)
+}
+
+
+full.ase <- function(A, d, diagaug=TRUE, doptr=FALSE, spoke = F, spoke_coef = 0.002) {
+  require(RSpectra)
+  
+  # doptr
+  if (doptr) {
+    g <- ptr(A)
+    A <- g[]
+  } else {
+    A <- A[]
+  }
+  
+  # diagaug
+  if (diagaug) {
+    diag(A) <- rowSums(A) / (nrow(A)-1)
+  }
+  
+  if ( spoke ) {
+    A <- A + spoke_coef 
+  }
+  #print(A)
+  A.svd <- svds(A,k=d)
+  Xhat <- A.svd$u %*% diag(sqrt(A.svd$d))
+  Xhat.R <- NULL
+  
+  if (!isSymmetric(A)) {
+    Xhat.R <- A.svd$v %*% diag(sqrt(A.svd$d))
+  }
+  
+  return(list(eval=A.svd$d, Xhat=Matrix(Xhat), Xhat.R=Xhat.R))
+}
+
+
+## Fix the eigenspoke
+edge_list = read.csv('/Users/tianyichen/Desktop/Research /PhDresearch/Hopkins_Organoid/Codes/R/adjacency_edges.csv')
+filenames = unique(edge_list$File)
+
+file = filenames [1]
+
+well = "well000"
+
+subset_data <- subset(edge_list, File == file & Well == well)
+
+if (nrow(subset_data) == 0) {
+  next
+}
+
+n_rows <-   n_cols   <- unique(subset_data$dim)
+
+# Create a sparse adjacency matrix
+sparse_matrix <- sparseMatrix(
+  i = subset_data$Row + 1,  
+  j = subset_data$Column + 1,
+  dims = c(n_rows, n_cols)
+)
+
+
+## directed version:
+g <- graph_from_adjacency_matrix(sparse_matrix, weighted = NULL, mode = "directed", diag = FALSE)
+
+components <- igraph::clusters(g, mode="weak")
+biggest_cluster_id <- which.max(components$csize)
+vert_ids <- V(g)[components$membership == biggest_cluster_id]
+g <- igraph::induced_subgraph(g, vert_ids)
+
+n = vcount(g)
+num_edges = ecount(g)
+
+
+par(mfrow=c(1,2))
+cc = 0
+ase = full.ase(g, 20, spoke = T , spoke_coef = cc)
+
+e = getElbows(sort(ase$eval,decreasing=TRUE ))
+
+dhat = e[1]
+
+## for directed ASE using both left and right singular vectors, we see eigenspoke.
+plot(ase$Xhat[,1:e[1]], ase$Xhat.R[,1:e[1]])
+```
+
+
+
+```{r, fig.height=10, fig.width=7, fig.cap="Add a small constant c to all entries of the directed adjacency matrix A, and apply ASE again. It seems not to fix the eigenspoke problem; it only rescales the axes." }
+
+par(mfrow=c(4,2))
+
+cc_values <- c(0.1, 0.3, 0.8, 1)
+
+for (cc in cc_values) {
+  ase <- full.ase(g, 20, spoke = TRUE, spoke_coef = cc)
+  e <- getElbows(sort(ase$eval, decreasing = TRUE))
+  
+  plot(ase$Xhat[,1:e[1]], ase$Xhat.R[,1:e[1]], 
+       main = paste('Directed Graph', '- Added Constant =', cc))
+}
+
+dev.off()
+
+```
+
+## Symmetrized version
+
+Note this is a GRDPG, with one significant large negative eigenvalue. And scree plot on the singular values/magnitude of eigenvalues indicates we should choose dhat = 2, while the second singular value corresponds to a negative eigenvalue.
+
+```{r, fig.cap= 'Left: Scree plot of the singular values of symmetrized graph, while the second largest singular value corresponding to a negative eigenvalue. Right: ASE of symmetrized graph, which is a GRDPG. And it shows eigenspoke again.' }
+g <- graph_from_adjacency_matrix(sparse_matrix, weighted = NULL, mode = "undirected", diag = FALSE)
+
+components <- igraph::clusters(g, mode="weak")
+biggest_cluster_id <- which.max(components$csize)
+vert_ids <- V(g)[components$membership == biggest_cluster_id]
+g <- igraph::induced_subgraph(g, vert_ids)
+
+n = vcount(g)
+num_edges = ecount(g)
+
+A <- g[]
+eigs(A, k =10, which = "LM")$values
+svds(A, k=10)$d
+
+
+par(mfrow=c(1,2))
+
+e = getElbows(sort(ase$eval,decreasing=TRUE ))
+
+
+cc = 0
+ase = full.ase(g, 10, spoke = T , spoke_coef = cc)
+
+plot(ase$Xhat[,1], ase$Xhat[,10])
+
+```
+
+Note in the current full.ase function, we are using svds function, thus the second largest(magnitude) singular value is the 10th singular value in the result list. Thus we should plot ASE as:
+
+
+```{r, message=FALSE,fig.height=10, fig.width=7, fig.cap='Add a small constant cc to all entry of undirected adj matrix A, and ASE agian, it seems to fix the eigenspoke problem a bit? It add more curvatrue. What is more, as c gets larger, the scree plot shows the first elbow=1, meaning we should only consider 1 dimension.' }
+
+par(mfrow=c(4,2))  # 4 rows, 2 columns layout
+
+cc_values <- c(0.1, 0.3, 0.8, 1)
+
+for (cc in cc_values) {
+  ase <- full.ase(g, 10, spoke = TRUE, spoke_coef = cc)
+  e <- getElbows(sort(ase$eval, decreasing = TRUE))
+  
+  plot(ase$Xhat[,1], ase$Xhat[,10], 
+       main = paste('symmetrized graph', 'added constant =', cc))
+}
+
+dev.off()  # Ensure proper plot rendering
+```
