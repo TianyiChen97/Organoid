@@ -9,7 +9,6 @@ output:
 
 ## Original directed graph version. 
 We pick one graph for example. 
-https://tianyichen97.github.io/Organoid/3VS1/fix spoke.html 
 ```{r, message=FALSE, fig.cap= "Left: Scree plot for the original unweighted and directed graph. The first elbow is at dhat=1. Right: Plot of ASE embedding for the directed graph: first scaled left singular vector against first scaled right singular vector, indicating a clear eigenspoke" }
 
 library('randnet')

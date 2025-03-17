@@ -11,7 +11,7 @@
 
 <meta name="author" content="Tianyi Chen" />
 
-<meta name="date" content="2025-03-04" />
+<meta name="date" content="2025-03-17" />
 
 <title>Community detection for 3vs 1 organoid data</title>
 
@@ -447,14 +447,17 @@ display: none;
 <h1 class="title toc-ignore">Community detection for 3vs 1 organoid
 data</h1>
 <h4 class="author">Tianyi Chen</h4>
-<h4 class="date">2025-03-04</h4>
+<h4 class="date">2025-03-17</h4>
 
 </div>
 
 
+<div id="httpstianyichen97.github.ioorganoid3vs1pre.html" class="section level2">
+<h2><a href="https://tianyichen97.github.io/Organoid/3VS1/pre.html" class="uri">https://tianyichen97.github.io/Organoid/3VS1/pre.html</a></h2>
 <div id="q-whether-there-is-number-of-communities-difference-between-single-organoidm07914-and-multiple-organoidm07915" class="section level3">
 <h3>Q: whether there is number of communities difference between single
 organoid(M07914) and multiple organoid(M07915)?</h3>
+</div>
 </div>
 <div id="basic-information." class="section level2">
 <h2>Basic information.</h2>
@@ -495,11 +498,9 @@ analyzed.</p>
 <p>Stimulation (Recording from the stimulation)</p>
 <pre><code>000291 (folder where data from during stimulation #1 (random location of stim electrodes) h5 file is located) 
 000295 (folder where data from during stimulation #2 (single region location of stim electrodes) h5 file is located) </code></pre>
-</div>
-</div>
-<div id="functions" class="section level2">
-<h2>Functions</h2>
-<pre class="r"><code>library(&#39;randnet&#39;)
+<pre class="r"><code>## Functions 
+
+library(&#39;randnet&#39;)
 library(irlba)
 library(mclust)
 library(igraph)
@@ -696,8 +697,9 @@ scree_plot_tc &lt;- function(kk){
     
 }</code></pre>
 </div>
-<div id="data-processing" class="section level2">
-<h2>Data processing</h2>
+</div>
+<div id="data-processing-and-the-summary-table" class="section level2">
+<h2>Data processing and the summary table</h2>
 <p>Below we show the summary table which contains filename, well, stage,
 group(M07914 or M07915), number of nodes, num of edges and GMM+BIC
 results for communitiy detection and BHMC results.</p>
