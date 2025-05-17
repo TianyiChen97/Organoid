@@ -8,52 +8,105 @@ library(mvtnorm)
 library(dplyr)
 
 
-
-plot_GMM_contours <- function(mc) {
+plot_GMM_contours <- function(mc, contour_or_not = TRUE) {
   library(mvtnorm)
-  # Extract GMM model results
+  library(ggplot2)
+  library(RColorBrewer)
+  
+  # Use the data directly if it has 2 columns, otherwise apply PCA to extract the first two components
+  if(ncol(mc$data) == 2) {
+    Xhat <- mc$data
+  } else {
+    pca_result <- prcomp(mc$data, scale. = TRUE)
+    Xhat <- pca_result$x[, 1:2]
+  }
+  
   clusters <- mc$classification  # Cluster labels
-  Xhat <- mc$data[,1:2]  # Use first two dimensions for visualization
   
   # Create a data frame for plotting
   plot_data <- data.frame(
-    X1 = Xhat[,1],
-    X2 = Xhat[,2],
+    X1 = Xhat[, 1],
+    X2 = Xhat[, 2],
     Cluster = as.factor(clusters)
   )
   
-  # Generate contour data for each cluster using estimated parameters
-  contour_data <- data.frame()
+  num_clusters <- length(unique(plot_data$Cluster))
   
-  for (k in 1:mc$G) {
-    mean_k <- mc$parameters$mean[, k]  # Mean of cluster k
-    sigma_k <- mc$parameters$variance$sigma[,,k]  # Covariance matrix of cluster k
-    
-    # Create a grid for density estimation
-    x_seq <- seq(min(Xhat[,1]), max(Xhat[,1]), length.out = 100)
-    y_seq <- seq(min(Xhat[,2]), max(Xhat[,2]), length.out = 100)
-    grid <- expand.grid(X1 = x_seq, X2 = y_seq)
-    
-    # Compute multivariate density on the grid
-    density_values <- dmvnorm(grid, mean = mean_k, sigma = sigma_k)
-    grid$Density <- density_values
-    grid$Cluster <- as.factor(k)
-    
-    contour_data <- rbind(contour_data, grid)
+  # Base plot with scatter points colored by cluster
+  p <- ggplot(plot_data, aes(x = X1, y = X2, color = Cluster)) +
+    geom_point(size = 3, alpha = 0.7) +
+    labs(title = "GMM Clustering", x = "Dimension 1", y = "Dimension 2") +
+    theme_minimal()
+  
+  # Use an appropriate palette: if more than 9 clusters, generate a custom palette
+  if (num_clusters > 9) {
+    p <- p + scale_color_manual(values = colorRampPalette(brewer.pal(9, "Set1"))(num_clusters))
+  } else {
+    p <- p + scale_color_brewer(palette = "Set1")
   }
   
-  # Plot scatter with GMM contours
-  ggplot(plot_data, aes(x = X1, y = X2, color = Cluster)) +
-    geom_point(size = 3, alpha = 0.7) +  # Scatter plot of ASE embeddings
-    geom_contour(data = contour_data, aes(x = X1, y = X2, z = Density, color = Cluster), bins = 5) +  # GMM contour lines
-    labs(title = "GMM Clustering with Contours on ASE Embedding",
-         x = "ASE Dimension 1",
-         y = "ASE Dimension 2") +
-    theme_minimal() +
-    scale_color_brewer(palette = "Set1")
+  # If contour_or_not is TRUE, compute and add contour lines
+  if (contour_or_not) {
+    contour_data <- data.frame()
+    
+    for (k in 1:mc$G) {
+      mean_k <- mc$parameters$mean[, k]  # Mean for cluster k
+      sigma_k <- mc$parameters$variance$sigma[,,k]  # Covariance matrix for cluster k
+      
+      # Create a grid for density estimation
+      x_seq <- seq(min(Xhat[, 1]), max(Xhat[, 1]), length.out = 100)
+      y_seq <- seq(min(Xhat[, 2]), max(Xhat[, 2]), length.out = 100)
+      grid <- expand.grid(X1 = x_seq, X2 = y_seq)
+      
+      # Compute the multivariate density on the grid
+      density_values <- dmvnorm(grid, mean = mean_k, sigma = sigma_k)
+      grid$Density <- density_values
+      grid$Cluster <- as.factor(k)
+      
+      contour_data <- rbind(contour_data, grid)
+    }
+    
+    p <- p + geom_contour(data = contour_data,
+                          aes(x = X1, y = X2, z = Density, color = Cluster),
+                          bins = 5)
+  }
+  
+  return(p)
 }
+
+
+
+full.ase <- function(A, d, diagaug=TRUE, doptr=FALSE) {
+  require(irlba)
+  
+  # doptr
+  if (doptr) {
+    g <- ptr(A)
+    A <- g[]
+  } else {
+    A <- A[]
+  }
+  A = as.matrix(A)
+  
+  # diagaug
+  if (diagaug) {
+    diag(A) <- rowSums(A) / (nrow(A)-1)
+  }
+  
+  A.svd <- irlba(A,d)
+  Xhat <- A.svd$u %*% diag(sqrt(A.svd$d))
+  Xhat.R <- NULL
+  
+  if (!isSymmetric(A)) {
+    Xhat.R <- A.svd$v %*% diag(sqrt(A.svd$d))
+  }
+  
+  return(list(eval=A.svd$d, Xhat=Matrix(Xhat), Xhat.R=Xhat.R))
+}
+
+
 full.ase <- function(A, d, diagaug=TRUE, doptr=FALSE, spoke = F, spoke_coef = 0.002) {
-  require(RSpectra)
+  require(irlba)
   
   # doptr
   if (doptr) {
@@ -72,7 +125,7 @@ full.ase <- function(A, d, diagaug=TRUE, doptr=FALSE, spoke = F, spoke_coef = 0.
     A <- A + spoke_coef 
   }
   #print(A)
-  A.svd <- svds(A,k=d)
+  A.svd <- irlba::irlba(A, d)
   Xhat <- A.svd$u %*% diag(sqrt(A.svd$d))
   Xhat.R <- NULL
   
@@ -165,22 +218,22 @@ doMclustASE_directed = function(g, dmax=100 , sk = T , s_c = 0.002 ) {
   Kmax = n/5
   ase = full.ase(g, d=dmax, diagaug=TRUE, doptr=FALSE ,  spoke = sk, spoke_coef = s_c)
   elb = getElbows(ase$eval, plot=F)
-  #dhat = max(elb[1],2)
-  dhat = elb[1]
+  dhat = max(elb[1],2)
+  #dhat = elb[1]
   Xhat = cbind(ase$Xhat[,1:dhat],ase$Xhat.R[,1:dhat])
   #Xhat = ase$Xhat[,1:dhat]
   mc = Mclust(Xhat, G=2:Kmax, verbose=T)
   Khat = mc$G
   return( list(mc=mc,Khat=Khat) )
 }
-doMclustASE_directed_spoke = function(g, dmax=100) {
+doMclustASE_directed = function(g, dmax=100) {
   #pacman::p_load(irlba, gmmase, mclust)
   n = vcount(g)
   Kmax = n/5
-  ase = full.ase(g, d=dmax, diagaug=TRUE, doptr=FALSE ,  spoke = T, spoke_coef = 0.002)
+  ase = full.ase(g, d=dmax, diagaug=TRUE, doptr=FALSE ,  spoke = F, spoke_coef = 0.002)
   elb = getElbows(ase$eval, plot=F)
-  #dhat = max(elb[1],2)
-  dhat = elb[1]
+  dhat = max(elb[1],2)
+  #dhat = elb[1]
   Xhat = cbind(ase$Xhat[,1:dhat],ase$Xhat.R[,1:dhat])
   #Xhat = ase$Xhat[,1:dhat]
   mc = Mclust(Xhat, G=2:Kmax, verbose=T)

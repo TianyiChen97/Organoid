@@ -1,0 +1,780 @@
+---
+title: "Community detection for 3vs 1 organoid data"
+author: "Tianyi Chen"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+---
+
+
+## Super-selective information
+I used this parameter set. Erik tried it on the synthetic data and found a 5% accuracy decrease compare to the original parameter set, which we agree is acceptable. NB: I change the parameter set because the original set with adj 0.8 is too selective and gives too sparse graph. (Each (T, sigma) pair gives a yes/no connection prediction. A connection is declared if adj fraction of (T, sigma) pairs (or higher) gives a yes prediction.)
+
+{'paths': {'source_files': '/cis/project/organoid/Dec_10_2024/241018/',
+  'results': '/cis/project/organoid/Dec_29_2024_ecr_results'},
+ 'data': {'fs': 10000,
+  'spike_amp_thresh_percentile': 3.25,
+  'corr_amp_thresh_percentile': None,
+  'corr_amp_thresh_std': 1},
+ 'windows': {'win_dur': 'None', 'win_overlap_dur': 0},
+ 'super_sel': {'recompute': False,
+  'adj_threshold': 0.5,
+  'raster_dur': 0.0005,
+  'corr_type': 'cc',
+  'n_corr_peaks_max': 4,
+  'epsilon': 0.003,
+  'T_list': [0.0225, 0.02, 0.0175, 0.016],
+  'sigma_list': [0.0004, 0.00055, 0.0007]}}
+
+## Basic information. 
+The file name(ex:'/cis/project/organoid/Dec_29_2024_ecr_results/M07915/Stimulation/000295/data.raw_20241213_18h15m.pkl), with 'M07914' or 'M07915', indicates single organoid placed on the MEA or multiple organoids. Each file contains recording from 6 wells. And things like "000298" in the filenames indicates its stage/time accroding to my understanding of Dowlette's document (See below). **Warning, the stage is a concept by me that has not been confirmed by the scientists.** Each file's each well we have a directed graph. Stored in the format of edge list. There are in total 12 files , thus we should have 72 graphs in total, after eliminating the wells in some files that have 0 edges, we have 60 graphs in total to be analyzed. 
+
+Below are detailed info about what filename indicates:
+
+### Stage infromation from Dowlette's document:
+241018: this is the date the experiment was conducted 
+
+--M07914 (Single organoid plate number) 
+
+  ActivityScan (Finding the electrodes that are active) 
+  
+    000297 (folder where the h5 file is located) (I call this stage 1)
+    
+  Network (Recording from the active electrodes) 
+  
+    000298 (folder where the baseline (before all stim) h5 file is located) (I call this stage 2)
+    000300 (folder where the recording after stimulation #1(random location of stim electrodes) h5 file is located) (I call this stage 4)
+    000302 (folder where the recording after stimulation #2(single region location of stim electrodes) h5 file is located) (I call this stage 6)
+  
+  Stimulation (Recording from the stimulation) 
+    
+    000299 (folder where data from during stimulation #1 (random location of stim electrodes) h5 file is located) (I call this stage 3)
+    000301 (folder where data from during stimulation #2 (single region location of stim electrodes) h5 file is located)
+    (I call this stage 5)
+                                
+--M07915 (Multi organoid plate number) 
+  
+  ActivityScan (Finding the electrodes that are active) 
+    
+    000289 (folder where the h5 file is located) 
+  
+  Network (Recording from the active electrodes) 
+    
+    000290 (folder where the baseline (before all stim) h5 file is located) (stage 2)
+    000293 (folder where the recording after stimulation #1(random location of stim electrodes) h5 file is located) (stage 4 )
+    000296 (folder where the recording after stimulation #2(single region location of stim electrodes) h5 file is located) (stage 6)
+  
+  Stimulation (Recording from the stimulation) 
+   
+    000291 (folder where data from during stimulation #1 (random location of stim electrodes) h5 file is located)  (3)
+    000295 (folder where data from during stimulation #2 (single region location of stim electrodes) h5 file is located) (5)
+  
+  
+  
+  
+  
+```{r, message=FALSE, warning=FALSE}
+
+library(Matrix)
+library(igraph)
+library(mclust)
+library(randnet)
+library(irlba)
+library(ggplot2)
+library(MASS)
+library(mvtnorm)
+library(dplyr)
+library(RColorBrewer)
+
+full.ase <- function(A, d, diagaug=TRUE, doptr=FALSE) {
+  require(irlba)
+  
+  # doptr
+  if (doptr) {
+    g <- ptr(A)
+    A <- g[]
+  } else {
+    A <- A[]
+  }
+  A = as.matrix(A)
+  
+  # diagaug
+  if (diagaug) {
+    diag(A) <- rowSums(A) / (nrow(A)-1)
+  }
+  
+  A.svd <- irlba(A,d)
+  Xhat <- A.svd$u %*% diag(sqrt(A.svd$d))
+  Xhat.R <- NULL
+  
+  if (!isSymmetric(A)) {
+    Xhat.R <- A.svd$v %*% diag(sqrt(A.svd$d))
+  }
+  
+  return(list(eval=A.svd$d, Xhat=Matrix(Xhat), Xhat.R=Xhat.R))
+}
+
+
+
+full.lse <- function(A, d) {
+  deg.seq <- rowSums(A)
+  L.svd <- irlba(A/sqrt(outer(deg.seq,deg.seq)),d)
+  Xhat <- L.svd$u %*% diag(sqrt(L.svd$d))
+  Xhat.R <- NULL
+  
+  if (!isSymmetric(A)) {
+    Xhat.R <- L.svd$v %*% diag(sqrt(L.svd$d))
+  }
+  
+  return(list(eval=L.svd$d, Xhat=(Xhat), Xhat.R=(Xhat.R)))
+}
+
+getElbows <- function(dat, n = 3, threshold = FALSE, plot = TRUE, main="") {
+  if (is.matrix(dat)) {
+    d <- sort(apply(dat,2,sd), decreasing=TRUE)
+  } else {
+    d <- sort(dat,decreasing=TRUE)
+  }
+  
+  if (!is.logical(threshold))
+    d <- d[d > threshold]
+  
+  p <- length(d)
+  if (p == 0)
+    stop(paste("d must have elements that are larger than the threshold ",
+               threshold), "!", sep="")
+  
+  lq <- rep(0.0, p)                     # log likelihood, function of q
+  for (q in 1:p) {
+    mu1 <- mean(d[1:q])
+    mu2 <- mean(d[-(1:q)])              # = NaN when q = p
+    sigma2 <- (sum((d[1:q] - mu1)^2) + sum((d[-(1:q)] - mu2)^2)) /
+      (p - 1 - (q < p))
+    lq[q] <- sum( dnorm(  d[1:q ], mu1, sqrt(sigma2), log=TRUE) ) +
+      sum( dnorm(d[-(1:q)], mu2, sqrt(sigma2), log=TRUE) )
+  }
+  
+  q <- which.max(lq)
+  if (n > 1 && q < (p-1)) {
+    q <- c(q, q + getElbows(d[(q+1):p], n-1, plot=FALSE))
+  }
+  
+  if (plot==TRUE) {
+    if (is.matrix(dat)) {
+      sdv <- d # apply(dat,2,sd)
+      plot(sdv,type="b",xlab="dim",ylab="stdev",main=main)
+      points(q,sdv[q],col=2,pch=19)
+    } else {
+      plot(dat, type="b",main=main)
+      points(q,dat[q],col=2,pch=19)
+    }
+  }
+  
+  return(q)
+}
+
+stage1 <- c('000297', '000289')
+stage2 <- c('000298', '000290')
+stage4 <- c('000300', '000293')
+stage6 <- c('000302', '000296')
+stage3 <- c('000299', '000291')
+stage5 <- c('000301', '000295')
+
+get_stage <- function(file_path) {
+  if (grepl(paste(stage1, collapse = "|"), file_path)) {
+    return(1)
+  } else if (grepl(paste(stage2, collapse = "|"), file_path)) {
+    return(2)
+  } else if (grepl(paste(stage3, collapse = "|"), file_path)) {
+    return(3)
+  } else if (grepl(paste(stage4, collapse = "|"), file_path)) {
+    return(4)
+  } else if (grepl(paste(stage5, collapse = "|"), file_path)) {
+    return(5)
+  } else if (grepl(paste(stage6, collapse = "|"), file_path)) {
+    return(6)
+  } else {
+    return(NA) # Assign NA if no stage matches
+  }
+}
+
+plot_GMM_contours <- function(mc, contour_or_not = TRUE) {
+  
+  
+  # Use the data directly if it has 2 columns, otherwise apply PCA to extract the first two components
+  if(ncol(mc$data) == 2) {
+    Xhat <- mc$data
+  } else {
+    pca_result <- prcomp(mc$data, scale. = TRUE)
+    Xhat <- pca_result$x[, 1:2]
+  }
+  
+  clusters <- mc$classification  # Cluster labels
+  
+  # Create a data frame for plotting
+  plot_data <- data.frame(
+    X1 = Xhat[, 1],
+    X2 = Xhat[, 2],
+    Cluster = as.factor(clusters)
+  )
+  
+  num_clusters <- length(unique(plot_data$Cluster))
+  
+  # Base plot with scatter points colored by cluster
+  p <- ggplot(plot_data, aes(x = X1, y = X2, color = Cluster)) +
+    geom_point(size = 3, alpha = 0.7) +
+    labs(title = "GMM Clustering", x = "Dimension 1", y = "Dimension 2") +
+    theme_minimal()
+  
+  # Use an appropriate palette: if more than 9 clusters, generate a custom palette
+  if (num_clusters > 9) {
+    p <- p + scale_color_manual(values = colorRampPalette(brewer.pal(9, "Set1"))(num_clusters))
+  } else {
+    p <- p + scale_color_brewer(palette = "Set1")
+  }
+  
+  # If contour_or_not is TRUE, compute and add contour lines
+  if (contour_or_not) {
+    contour_data <- data.frame()
+    
+    for (k in 1:mc$G) {
+      mean_k <- mc$parameters$mean[, k]  # Mean for cluster k
+      sigma_k <- mc$parameters$variance$sigma[,,k]  # Covariance matrix for cluster k
+      
+      # Create a grid for density estimation
+      x_seq <- seq(min(Xhat[, 1]), max(Xhat[, 1]), length.out = 100)
+      y_seq <- seq(min(Xhat[, 2]), max(Xhat[, 2]), length.out = 100)
+      grid <- expand.grid(X1 = x_seq, X2 = y_seq)
+      
+      # Compute the multivariate density on the grid
+      density_values <- dmvnorm(grid, mean = mean_k, sigma = sigma_k)
+      grid$Density <- density_values
+      grid$Cluster <- as.factor(k)
+      
+      contour_data <- rbind(contour_data, grid)
+    }
+    
+    p <- p + geom_contour(data = contour_data,
+                          aes(x = X1, y = X2, z = Density, color = Cluster),
+                          bins = 5)
+  }
+  
+  return(p)
+}
+
+```
+
+
+
+
+```{r}
+## read in the data
+edge_list = read.csv('/Users/tianyichen/Desktop/Research /PhDresearch/Hopkins_Organoid/Codes/R/adjacency_edges.csv')
+filenames = unique(edge_list$File)
+
+```
+
+
+## Preview example of one graph: 
+
+Note graphs are all directed. Here is an example graph visualized, we realize there are lots of isolated nodes. 
+```{r}
+file = filenames [1]
+print(file)
+well = "well000"
+
+subset_data <- subset(edge_list, File == file & Well == well)
+if (nrow(subset_data) == 0) {
+  next
+}
+n_rows <-   n_cols   <- unique(subset_data$dim)
+
+sparse_matrix <- sparseMatrix(
+  i = subset_data$Row + 1,  
+  j = subset_data$Column + 1,
+  dims = c(n_rows, n_cols)
+)
+
+g <- graph_from_adjacency_matrix(sparse_matrix, weighted = NULL, mode = "directed", diag = FALSE)
+
+plot(g, 
+     vertex.size = 0.5,           # Adjust vertex size
+     vertex.color = "lightblue", # Set vertex color
+     vertex.label.cex = 0.1,     # Adjust label size
+     edge.arrow.size = 0.25) 
+A = g[]
+```
+Thus from now on we will only look at the largest connected component. For directed graph, weak connected component is found by treating the graph as undirected and then getting the connected component. The below is visualization of the largest connected component. 
+
+```{r}
+components <- igraph::clusters(g, mode="weak")
+biggest_cluster_id <- which.max(components$csize)
+vert_ids <- V(g)[components$membership == biggest_cluster_id]
+g <- igraph::induced_subgraph(g, vert_ids)
+n = vcount(g)
+num_edges = ecount(g)
+plot(g, 
+     vertex.size = 0.5,           # Adjust vertex size
+     vertex.color = "lightblue", # Set vertex color
+     vertex.label.cex = 0.1,     # Adjust label size
+     edge.arrow.size = 0.25) 
+```
+
+In this component, in total there are 847 nodes, but 452 of them are only receiving edges, with out degree 0. Meanwhile there are several nodes that point out many edges, that is, have high out degree. The node with maximum out degree has out degree 430 while in degree only 1. The following figure illustrate this. 
+
+```{r}
+A = g[]
+in_degree = colSums(A)
+out_degree = rowSums(A) 
+#par(mfrow=c(1,2))
+#hist(in_degree, ylim = c(0,800), breaks = 100)
+#hist(out_degree, ylim = c(0,800), breaks = 100)
+#length(which(in_degree == 0))
+#out_degree[which(in_degree == 0)]
+#in_degree[which(out_degree > max(out_degree)-100)]
+#length(which(out_degree == 0))
+#dim(A)
+degree_matrix <- cbind(in_degree, out_degree)
+rownames(degree_matrix) <- paste0("Node_", seq_len(nrow(degree_matrix)))
+colnames(degree_matrix) <- c("In-degree", "Out-degree")
+
+library(pheatmap)
+
+# Only show row labels for high-out-degree nodes 
+show_labels <- function(degree_matrix, top_n = 10) {
+  top_nodes <- order(degree_matrix[,'Out-degree'], decreasing = TRUE)[1:top_n]
+  labels <- rep("", nrow(degree_matrix))
+  labels[top_nodes] <- paste0("Node_", top_nodes)
+  labels
+}
+
+# Create heatmap with improved settings
+pheatmap(
+  degree_matrix,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  scale = "none",
+  color = colorRampPalette(c("white", "blue"))(100),
+  show_rownames = TRUE,
+  labels_row = show_labels(degree_matrix, top_n = 20),  # only label top 10 by out degree
+  angle_col = 0,  
+  fontsize_row = 6,
+  fontsize_col = 12,
+  main = "In-Degree and Out-Degree per Node",
+  legend = TRUE,
+  border_color = NA
+)
+```
+
+
+The above phenomenon is also related to/caused the eigen "spoke"(Right panel). Note Carey's group usually dealing with graphs by eigen decomposition on the adjacency matrix to get the representation of nodes(the dots in the following figure on the right) and their locations encodes the information of the graph structure. Then to decide how many communities/clusters are there, we will apply traditional/classical method on these representations. Thus we need good quality of such representation. 
+
+In the right panel we see "spoke" pattern in the most informative dimensions according to the scree plot(left panel). This means those representation are not good, which renders the following communities/clusters inference not trustable. Thus we have to fix it. 
+
+```{r}
+ase   <- full.ase(A, 10)
+par(mfrow = c(1,2))
+elb   <- getElbows(ase$eval, plot = T) ## note this is directed graph 
+plot(ase$Xhat[,1], ase$Xhat.R[,1])
+```
+
+Do same thing on the symmetrized directed graph, eigenspoke shows up again.  
+  
+```{r}
+ase   <- full.ase((A+t(A))/2, 10)
+par(mfrow = c(1,2))
+elb   <- getElbows(ase$eval, plot = T) ## note now i symmetrized it 
+plot(ase$Xhat[,1], ase$Xhat[,2])
+```
+
+
+To avoid the eigen spoke, **we will use higher(>=3) dimension representation for clustering algorithm**. We will use the second elbow indicated in the scree plot(left panel),for example, in the above figure second elbow is 6 dimensions. 
+
+
+
+## Num of Conmmunities analysis:
+
+We will use several methods: 
+Leidan(based on modularity) with different coarse level; 
+BHMC:Estimates the number of communities under block models by using the spectral properties of network Beth-Hessian matrix with moment correction([ref](https://arxiv.org/pdf/1507.00827) shows consistency).
+And using Carey's group's favorite algorithm: running EM algorithm on the nodes representation(we will use both Adj spectral embedding(ASE) and Laplacian spectral embedding(LSE) to get representation) then select number of communities using BIC. To decrease the number of communities, I add more penalty to model complexity in $BIC_{\kappa=3}$:
+
+$$
+\text{BIC}_{\kappa} = 2\ell \;-\;\kappa\,p\log(n)
+$$
+
+
+```{r, message=FALSE}
+
+rerun <- F
+# Define the filename for saving results
+summary_file <- "summary_table.RData"
+
+if (rerun) {
+  cat("Starting the long processing...\n")
+# 0) Choose your penalty multiplier
+kappa <- 3
+Kmax <- 50
+# 1) Initialize summary_table with two extra integer columns:
+summary_table <- data.frame(
+  File                        = character(),
+  Well                        = character(),
+  Num_edges                   = integer(),
+  Num_nodes                   = integer(),
+  Num_Communities_Leiden_0.8  = integer(),
+  Num_Communities_Leiden_1    = integer(),
+  Num_Communities_Leiden_2    = integer(),
+  Num_Communities_BHMC        = integer(),
+  Num_Communities_ASE_GMM     = integer(),
+  Num_Communities_LSE_GMM     = integer(),
+  Num_Communities_ASE_BIC_kappa = integer(),
+  Num_Communities_LSE_BIC_kappa = integer(),
+  GMM_ASE                     = I(list()),
+  GMM_LSE                     = I(list()),
+  stringsAsFactors            = FALSE
+)
+
+for (file in filenames) {
+  for (well in paste0("well", sprintf("%03d", 0:5))) {
+    subset_data <- subset(edge_list, File==file & Well==well)
+    if (nrow(subset_data)==0) next
+    # build graph
+    n_rows <- n_cols <- unique(subset_data$dim)
+    adj    <- sparseMatrix(
+      i    = subset_data$Row+1,
+      j    = subset_data$Column+1,
+      dims = c(n_rows,n_cols)
+    )
+    g     <- graph_from_adjacency_matrix(adj, mode="undirected", diag=FALSE)
+    comps <- clusters(g, mode="weak")
+    big   <- which.max(comps$csize)
+    g     <- induced_subgraph(g, V(g)[comps$membership==big])
+    
+    n_nodes <- vcount(g)
+    n_edges <- ecount(g)
+    
+    if (n_nodes < 51 ) {
+      summary_table <- rbind(summary_table, data.frame(
+        File                         = file,
+        Well                         = well,
+        Num_edges                    = n_edges,
+        Num_nodes                    = n_nodes,
+        Num_Communities_Leiden_0.8   = NA,
+        Num_Communities_Leiden_1     = NA,
+        Num_Communities_Leiden_2     = NA,
+        Num_Communities_BHMC         = NA,
+        Num_Communities_ASE_GMM      = NA,
+        Num_Communities_LSE_GMM      = NA,
+        Num_Communities_ASE_BIC_kappa = NA,
+        Num_Communities_LSE_BIC_kappa = NA,
+        GMM_ASE                      = I(list(NA)),
+        GMM_LSE                      = I(list(NA))
+      ))
+      next
+    }
+    
+    # Leiden communities
+    leiden_k <- lapply(c(0.8,1,2), function(res) {
+      comm <- cluster_leiden(
+        graph                = g,
+        resolution_parameter = res,
+        objective_function   = "modularity"
+      )
+      length(unique(membership(comm)))
+    })
+    
+    # BHMC
+    bhmc_k <- tryCatch(BHMC.estimate(g[], Kmax)$K[1], error=function(e) NA)
+    
+    # ASE–GMM
+    ase_GMM_result <- tryCatch({
+      ase   <- full.ase(g[], 10)
+      elb   <- getElbows(ase$eval, plot = F)
+      Mclust(ase$Xhat[,1:elb[2]], G=2:Kmax, verbose= T)
+    }, error=function(e) NA)
+    ase_k <-  ase_GMM_result$G
+    
+    # LSE–GMM
+    lse_GMM_result <- tryCatch({
+      lse   <- full.lse(g[], 10)
+      elb   <- getElbows(lse$eval, plot = F)
+      Mclust(lse$Xhat[,1:elb[2]], G=2:Kmax, verbose=T)
+    }, error=function(e) NA)
+    lse_k <-  lse_GMM_result$G
+    
+    # ───────────────────────────────────────────────────────────
+    # 2) Custom‐BIC with extra penalty for ASE
+    if (!is.na(ase_GMM_result$G)) {
+      BIC_mat_ase    <- ase_GMM_result$BIC
+      modelNames_ase <- colnames(BIC_mat_ase)
+      Gvals_ase      <- as.numeric(rownames(BIC_mat_ase))
+      n_ase          <- nrow(ase_GMM_result$data)  # or nrow(ase$Xhat)
+      d_ase          <- ncol(ase_GMM_result$data)  # or length of ASE dims
+      # build df_mat for ASE
+      df_mat_ase <- outer(Gvals_ase, modelNames_ase,
+                          Vectorize(function(G, mod) {
+                            var_pars  <- nMclustParams(mod, d_ase, G)
+                            mean_pars <- G * d_ase
+                            prop_pars <- G - 1
+                            var_pars + mean_pars + prop_pars
+                          })
+      )
+      dimnames(df_mat_ase) <- list(rownames(BIC_mat_ase), modelNames_ase)
+      extra_penalty_ase <- (kappa-1) * df_mat_ase * log(n_ase)
+      customBIC_ase     <- BIC_mat_ase - extra_penalty_ase
+      best_idx_ase      <- which(customBIC_ase == max(customBIC_ase, na.rm=TRUE), arr.ind=TRUE)
+      num_of_communities_ase_BIC_kappa <- 
+        as.numeric(rownames(customBIC_ase)[best_idx_ase[1]])
+    } else {
+      num_of_communities_ase_BIC_kappa <- NA
+    }
+    
+    # 3) Custom‐BIC with extra penalty for LSE
+    if (!is.na(lse_GMM_result$G)) {
+      BIC_mat_lse    <- lse_GMM_result$BIC
+      modelNames_lse <- colnames(BIC_mat_lse)
+      Gvals_lse      <- as.numeric(rownames(BIC_mat_lse))
+      n_lse          <- nrow(lse_GMM_result$data)
+      d_lse          <- ncol(lse_GMM_result$data)
+      df_mat_lse <- outer(Gvals_lse, modelNames_lse,
+                          Vectorize(function(G, mod) {
+                            var_pars  <- nMclustParams(mod, d_lse, G)
+                            mean_pars <- G * d_lse
+                            prop_pars <- G - 1
+                            var_pars + mean_pars + prop_pars
+                          })
+      )
+      dimnames(df_mat_lse) <- list(rownames(BIC_mat_lse), modelNames_lse)
+      extra_penalty_lse <- (kappa-1) * df_mat_lse * log(n_lse)
+      customBIC_lse     <- BIC_mat_lse - extra_penalty_lse
+      best_idx_lse      <- which(customBIC_lse == max(customBIC_lse, na.rm=TRUE), arr.ind=TRUE)
+      num_of_communities_lse_BIC_kappa <- 
+        as.numeric(rownames(customBIC_lse)[best_idx_lse[1]])
+    } else {
+      num_of_communities_lse_BIC_kappa <- NA
+    }
+    # ───────────────────────────────────────────────────────────
+    
+    # 4) Finally rbind everything—atomic + list‑columns + new BIC columns
+    summary_table <- rbind(summary_table, data.frame(
+      File                           = file,
+      Well                           = well,
+      Num_edges                      = n_edges,
+      Num_nodes                      = n_nodes,
+      Num_Communities_Leiden_0.8     = leiden_k[[1]],
+      Num_Communities_Leiden_1       = leiden_k[[2]],
+      Num_Communities_Leiden_2       = leiden_k[[3]],
+      Num_Communities_BHMC           = bhmc_k,
+      Num_Communities_ASE_GMM        = ase_k,
+      Num_Communities_LSE_GMM        = lse_k,
+      Num_Communities_ASE_BIC_kappa  = num_of_communities_ase_BIC_kappa,
+      Num_Communities_LSE_BIC_kappa  = num_of_communities_lse_BIC_kappa,
+      GMM_ASE                        = I(list(ase_GMM_result)),
+      GMM_LSE                        = I(list(lse_GMM_result))
+    ))
+  }
+}
+
+  # Save the summary table to the current directory
+  save(summary_table, file = summary_file)
+  cat("Summary table saved to", summary_file, "\n")
+
+} else {
+  cat("Skipping the data processing.\n")
+  # Load previously saved summary table (if available)
+  if (file.exists(summary_file)) {
+    load(summary_file, envir = .GlobalEnv)
+    cat("Loaded previous summary table from", summary_file, "\n")
+  } else {
+    cat("No previous summary table found.\n")
+  }
+}
+
+# Display the summary table
+head(summary_table)
+```
+
+For an example graph, we show the clustering result by using ASE+BIC. For visualization the dots in plot are PCA result of high dimension ASE result. The left panel kappa= 1 while the right is kappa = 3. 
+
+```{r}
+
+example_GMM <- summary_table$GMM_ASE[[1]]
+
+plot_GMM_contours(example_GMM, contour_or_not = F)
+
+BIC_mat    <- example_GMM$BIC
+modelNames <- colnames(BIC_mat)
+Gvals      <- as.numeric(rownames(BIC_mat))
+n          <- nrow(example_GMM$data)
+d          <- ncol(example_GMM$data)
+kappa      <- 3   # how harsh you want the penalty
+
+df_mat <- matrix(
+  nrow = length(Gvals),
+  ncol = length(modelNames),
+  dimnames = list(rownames(BIC_mat), colnames(BIC_mat))
+)
+
+
+for (i in seq_along(Gvals)) {
+  G <- Gvals[i]
+  for (j in seq_along(modelNames)) {
+    mod      <- modelNames[j]
+    var_pars <- nMclustParams(mod, d, G)      # # covariance parameters
+    mean_pars<- G * d                          # # mean parameters
+    prop_pars<- G - 1                          # # mixing proportions
+    df_mat[i,j] <- var_pars + mean_pars + prop_pars
+  }
+}
+
+
+extra_penalty <- (kappa - 1) * df_mat * log(n)
+customBIC     <- BIC_mat - extra_penalty
+
+best_idx <- which(customBIC == max(customBIC, na.rm=TRUE), arr.ind=TRUE)
+best_G    <- as.numeric(rownames(customBIC)[ best_idx[1] ])
+best_mod  <- colnames(customBIC)[                best_idx[2] ]
+#cat("With κ =", kappa, "→ choose model", best_mod, "with G =", best_G, "\n")
+
+gmm_custom <- Mclust(
+  example_GMM$data,
+  G          = best_G,
+  modelNames = best_mod,
+  verbose    = F
+)
+
+plot_GMM_contours(gmm_custom, contour_or_not = F)
+
+```
+
+### Result of communities estimation:
+
+First we ignore the stage information. For all graphs no matter which well from M07914, we treat them as a sample from M07914; and same for M07915. Thus we have two samples from M07914 and M07915 respectively. 
+Then we perform Wilcox rank sum test to test H0: distribution of number of communities in M07914 has the same location parameter as in M07915.
+
+The median of graphs from M07914(1 organoid) and M07915(3 organoid) are displayed. We can see M07915 has slightly bigger number of communities from several methods, but not significantly. Also number of nodes here is the number of nodes of the largest connect component, thus it indicates the denseness level of graph, that is the activity level of organoid. And M07915 is slighter higher but not significant.
+
+```{r, warning=F,message=FALSE}
+library(dplyr)
+library(tidyr)
+
+# Add Group and Stage, filter valid rows
+filtered_table <- summary_table %>%
+  mutate(
+    Group = case_when(
+      grepl("M07914", File) ~ "M07914",
+      grepl("M07915", File) ~ "M07915",
+      TRUE ~ NA_character_
+    ),
+    Stage = sapply(File, get_stage)
+  ) %>%
+  filter(!is.na(Num_Communities_BHMC), !is.na(Group))
+
+cols_to_test <- names(Filter(is.numeric, filtered_table[filtered_table$Group == "M07914", ]))
+cols_to_test <- setdiff(cols_to_test, "Stage")
+
+# Wilcoxon tests
+test_results <- lapply(cols_to_test, function(col) {
+  wilcox.test(
+    filtered_table %>% filter(Group == "M07914") %>% pull(col),
+    filtered_table %>% filter(Group == "M07915") %>% pull(col),
+    paired = FALSE, exact = F
+  )
+})
+pval_df <- data.frame(
+  Column = cols_to_test,
+  p_value = sapply(test_results, `[[`, "p.value")
+)
+
+# Create summary table with medians and p-values
+summary_table_out <- filtered_table %>%
+  group_by(Group) %>%
+  summarise(across(all_of(cols_to_test), median, na.rm = TRUE)) %>%
+  pivot_longer(-Group, names_to = "Column", values_to = "Median") %>%
+  pivot_wider(names_from = Group, values_from = Median) %>%
+  left_join(pval_df, by = "Column") %>%
+  mutate(across(where(is.numeric), round, digits = 2))
+
+# Display
+print(summary_table_out)
+
+```
+
+Now we use the stage information. We find all graphs from a specific stage and from M07914 or M07915 then take median of their estimated number of communities. That number will represent num of commnutities for that stage and that M07914/5.
+Stage 1 is too sparse thus omitted. So we have 5 stages left summarized in 5 tables below.
+
+Several observation:
+
+In stages 2 3 4 and 5, M07914 is more active than M07915, only in Stage 6 M07915 is more active, but at this stage the active number of nodes are particularly large which make the overall median larger for M07915 as we saw before. 
+
+Maybe due to this less activeness, several methods number of communities estimation indicates actually M07915 has less number than M07914. While this gets flipped for stage 6. 
+
+
+```{r}
+summary_table$Group <- ifelse(grepl("M07914", summary_table$File), "M07914",
+                              ifelse(grepl("M07915", summary_table$File), "M07915", NA))
+
+summary_table$Stage <- sapply(summary_table$File, get_stage)
+filtered_table <- subset(summary_table, !is.na(Num_Communities_BHMC))
+Num_community_table <- filtered_table[, c(3:12,15,16)]
+
+library(dplyr)
+library(tidyr)
+
+grouped_summary_2 <- Num_community_table %>%
+  group_by(Group, Stage) %>%
+  summarise(
+    across(where(is.numeric), median, na.rm = TRUE),
+    Count = n(),
+    .groups = 'drop'
+  )
+
+# Function to create a table for each stage
+create_stage_table <- function(stage_number) {
+  data <- grouped_summary_2 %>%
+    filter(Stage == stage_number) %>%
+    pivot_longer(
+      cols = names(.)[!(names(.) %in% c("Group", "Stage"))],
+      names_to = "Variable",
+      values_to = "Value"
+    ) %>%
+    pivot_wider(names_from = Group, values_from = Value, values_fill = list(Value = NA))
+  return(data)
+}
+
+
+# Create tables for each stage and print them
+stage_values <- sort(unique(grouped_summary_2$Stage))
+stage_tables <- lapply(stage_values, create_stage_table)
+names(stage_tables) <- paste0("Stage_", stage_values)
+
+# Print all tables
+for (name in names(stage_tables)) {
+  print(stage_tables[[name]] %>% mutate(across(where(is.numeric), ~ round(.x, 0))))
+}
+```
+
+Now for a specific method, M07914 and M07915 both have data from 5 stages, we can conduct a paired Wilcoxon test for number of communities. However again most of the methods doesn't see significant difference between number of communities for M07914 and M07915. 
+
+
+```{r}
+# Paired Wilcoxon tests
+group_1 <- grouped_summary_2 %>% filter(Group == "M07914") %>% arrange(Stage)
+group_2 <- grouped_summary_2 %>% filter(Group == "M07915") %>% arrange(Stage)
+
+test_results <- lapply(cols_to_test, function(col) {
+  wilcox.test(group_1[[col]], group_2[[col]], paired = TRUE, exact = FALSE)
+})
+
+results_df <- data.frame(
+  Column = cols_to_test,
+  p_value = round(sapply(test_results, function(x) x$p.value), 2)
+)
+
+print(results_df)
+
+```
+
+
+
