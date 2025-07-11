@@ -1,12 +1,71 @@
+library(Matrix)
+library(igraph)
+library(mclust)
+library(randnet)
+library(irlba)
+library(ggplot2)
+library(MASS)
+library(mvtnorm)
+library(dplyr)
+library(RColorBrewer)
+library(readr)
+library(patchwork)  
 
-# define the sets
-files <- filenames[1:6] ## M07915
-files <- filenames[7:12] ## M07914
+edge_list = read_csv("~/Desktop/Research /PhDresearch/Hopkins_Organoid/MO VS SO_2025_May_graphs/adjacency_edges_May_31_2025_ecr_results_no_window.csv")
+filenames = unique(edge_list$File)
+
+#Single organoid plate – M08438 
+#Multi-organoid plate – M07359 
+
+
+stage0 <- c('000386', '000384')  # ActivityScan
+stage1 <- c('000387', '000385')  # Baseline #1 (pre‑stim)
+stage2 <- c('000395', '000390')  # Baseline #2 (pre‑stim)
+stage3 <- c('000396', '000391')  # During stimulation #1 (random‑site)
+stage4 <- c('000397', '000392')  # After stimulation #1
+stage5 <- c('000398', '000393')  # During stimulation #2 (single‑region)
+stage6 <- c('000399', '000394')  # After stimulation #2
+
+get_stage <- function(file_path) {
+  if (grepl(paste(stage0, collapse = "|"), file_path)) {
+    return(0)
+  } else if (grepl(paste(stage1, collapse = "|"), file_path)) {
+    return(1)
+  } else if (grepl(paste(stage2, collapse = "|"), file_path)) {
+    return(2)
+  } else if (grepl(paste(stage3, collapse = "|"), file_path)) {
+    return(3)
+  } else if (grepl(paste(stage4, collapse = "|"), file_path)) {
+    return(4)
+  } else if (grepl(paste(stage5, collapse = "|"), file_path)) {
+    return(5)
+  } else if (grepl(paste(stage6, collapse = "|"), file_path)) {
+    return(6)
+  } else {
+    return(NA) # Assign NA if no stage matches
+  }
+}
+
+
+extract_chip_id <- function(path) {
+  sub(
+    ".*?/([^/]+)/(?:Network|Stimulation|ActivityScan)/.*",
+    "\\1",
+    path,
+    perl = TRUE
+  )
+}
+
+files <- filenames[3:8] ## M08438
+files <- filenames[9:13] ## M07359
+
+
+
 
 wells <- paste0("well", sprintf("%03d", 0:5))
 
 library(purrr)
-library(patchwork)  
+
 # build & sort the index using base R
 index_df <- expand.grid(
   file = files,
@@ -25,7 +84,6 @@ index_df <- index_df[order(index_df$stage, index_df$well_num), ]
 rownames(index_df) <- NULL
 # now loop in that order
 plots <- vector("list", nrow(index_df))
-
 for (i in seq_len(nrow(index_df))) {
   file  <- index_df$file[i]
   well  <- index_df$well[i]
@@ -94,7 +152,6 @@ for (i in seq_len(nrow(index_df))) {
       panel.border   = element_rect(colour = "black", fill = NA),
       panel.background = element_blank()
     )
-  
   plots[[i]] <- p
 }
 
@@ -107,10 +164,14 @@ dfp <- tibble(
 df_rows <- dfp %>%
   group_by(stage) %>%
   summarise(plots_list = list(plot), .groups = "drop")
+df_rows %>%
+  mutate(n_plots = lengths(plots_list)) %>%      # how many plots per stage?
+  arrange(stage)
+
 
 df_rows <- df_rows %>%
   mutate(
-    padded = map(plots_list, ~{
+    padded = purrr::map(plots_list, ~{
       pls <- .x
       if (length(pls) < 6) {
         pls <- c(pls, rep(list(plot_spacer()), 6 - length(pls)))
@@ -119,13 +180,14 @@ df_rows <- df_rows %>%
     })
   )
 
-stage_rows <- map(df_rows$padded, ~ wrap_plots(.x, ncol = 6))
+stage_rows <- purrr::map(df_rows$padded, ~ wrap_plots(.x, ncol = 6))
 
 final_plot <- wrap_plots(stage_rows, ncol = 1) +
   plot_annotation(
-    title    = "M07914"
+    title    = extract_chip_id(file[1])
   ) 
 
 # Draw it
 final_plot
-files
+
+
