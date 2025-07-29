@@ -1,0 +1,407 @@
+---
+title: "ASE embedding Geometry"
+author: "Tianyi Chen"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+---
+
+```{r, message=FALSE,warning=FALSE}
+library(Matrix)
+library(igraph)
+library(mclust)
+library(randnet)
+library(irlba)
+library(ggplot2)
+library(MASS)
+library(mvtnorm)
+library(dplyr)
+library(RColorBrewer)
+library(readr)
+library(patchwork)  
+edge_list = read_csv("~/Desktop/Research /PhDresearch/Hopkins_Organoid/MO VS SO_2025_May_graphs/adjacency_edges_May_31_2025_ecr_results_no_window.csv")
+filenames = unique(edge_list$File)
+filenames = filenames[-2]
+```
+
+```{r}
+extract_path_part <- function(filepath) {
+  # Use sub() to find the pattern and return only that part
+  sub(".*/(M\\d+/[A-Za-z]+?/\\d+)/.*", "\\1", filepath)
+}
+full.ase <- function(A, d, diagaug=TRUE, doptr=FALSE) {
+  require(irlba)
+  
+  # doptr
+  if (doptr) {
+    g <- ptr(A)
+    A <- g[]
+  } else {
+    A <- A[]
+  }
+  A = as.matrix(A)
+  
+  # diagaug
+  if (diagaug) {
+    diag(A) <- rowSums(A) / (nrow(A)-1)
+  }
+  
+  A.svd <- irlba(A,d)
+  Xhat <- A.svd$u %*% diag(sqrt(A.svd$d))
+  Xhat.R <- NULL
+  
+  if (!isSymmetric(A)) {
+    Xhat.R <- A.svd$v %*% diag(sqrt(A.svd$d))
+  }
+  
+  return(list(eval=A.svd$d, Xhat=Matrix(Xhat), Xhat.R=Xhat.R))
+}
+
+
+
+full.lse <- function(A, d) {
+  deg.seq <- rowSums(A)
+  L.svd <- irlba(A/sqrt(outer(deg.seq,deg.seq)),d)
+  Xhat <- L.svd$u %*% diag(sqrt(L.svd$d))
+  Xhat.R <- NULL
+  
+  if (!isSymmetric(A)) {
+    Xhat.R <- L.svd$v %*% diag(sqrt(L.svd$d))
+  }
+  
+  return(list(eval=L.svd$d, Xhat=(Xhat), Xhat.R=(Xhat.R)))
+}
+
+getElbows <- function(dat, n = 3, threshold = FALSE, plot = TRUE, main="") {
+  if (is.matrix(dat)) {
+    d <- sort(apply(dat,2,sd), decreasing=TRUE)
+  } else {
+    d <- sort(dat,decreasing=TRUE)
+  }
+  
+  if (!is.logical(threshold))
+    d <- d[d > threshold]
+  
+  p <- length(d)
+  if (p == 0)
+    stop(paste("d must have elements that are larger than the threshold ",
+               threshold), "!", sep="")
+  
+  lq <- rep(0.0, p)                     # log likelihood, function of q
+  for (q in 1:p) {
+    mu1 <- mean(d[1:q])
+    mu2 <- mean(d[-(1:q)])              # = NaN when q = p
+    sigma2 <- (sum((d[1:q] - mu1)^2) + sum((d[-(1:q)] - mu2)^2)) /
+      (p - 1 - (q < p))
+    lq[q] <- sum( dnorm(  d[1:q ], mu1, sqrt(sigma2), log=TRUE) ) +
+      sum( dnorm(d[-(1:q)], mu2, sqrt(sigma2), log=TRUE) )
+  }
+  
+  q <- which.max(lq)
+  if (n > 1 && q < (p-1)) {
+    q <- c(q, q + getElbows(d[(q+1):p], n-1, plot=FALSE))
+  }
+  
+  if (plot==TRUE) {
+    if (is.matrix(dat)) {
+      sdv <- d # apply(dat,2,sd)
+      plot(sdv,type="b",xlab="dim",ylab="stdev",main=main)
+      points(q,sdv[q],col=2,pch=19)
+    } else {
+      plot(dat, type="b",main=main)
+      points(q,dat[q],col=2,pch=19)
+    }
+  }
+  
+  return(q)
+}
+
+```
+
+
+In this document i will present the ASE embedding results for both datasets.For all graphs i will symmetrize the graph and then find the largest connected component and then apply ASE. 
+
+## Summary of the data.
+
+Single organoid plate – M08438 
+
+Multi-organoid plate – M07359 
+
+M07357--???
+
+There are mysterious chip M07357/000388 only well004 contains 52 edges, all are removed after filter. Thus M07357/000388 is not stored in the edge list csv file. 
+
+Now 15 files left.
+Among them 3 are completely empty either no edges at all or after filter. 
+For chip M08438
+000396 doesn't have edges for all wells. Thus not stored in the edge list csv file. 
+For chip M07359
+000384 only have 2 edges in well 002 but after filter adj matrix has no edge thus not stored in the edge list file. 
+000391 doesn't have edges for all wells. Thus not stored in the edge list csv file. 
+
+Now remain 12 files in the edgelist file. Among them 2 are almost empty. 
+000393 only well004 has 34 edges;
+000386 only well000 and well002 have 2 edges in both. 
+
+
+**However, the recording in M07359 does show clear geometry property.** Others are like the noisy version of it. 
+
+## Embedding geometry for the new MO vs SO dataset . 
+```{r,message=FALSE}
+library(igraph)
+library(Matrix)
+library(iGraphMatch) # Assuming full.ase and getElbows are from this package
+library(scatterplot3d)
+
+for (file in filenames) {
+    par(mfrow = c(2, 3), mar = c(3, 3, 3, 1), oma = c(4, 0, 3, 0))
+    
+    # Define the list of wells to iterate over
+    well_list <- paste0("well", sprintf("%03d", 0:5))
+    
+    # --- Main Loop ---
+    for (well in well_list) {
+      
+      # 1. Subset the data for the current file and well
+      subset_data <- subset(edge_list, File == file & Well == well)
+      
+      # Initial check for any data at all
+      if (nrow(subset_data) == 0) {
+        plot(1, type = "n", axes = FALSE, xlab = "", ylab = "")
+        title(main = well)
+        text(1, 1, "No data available", col = "red")
+        next # Move to the next well
+      }
+      
+      # --- Graph Construction and ASE ---
+      # This block is wrapped in tryCatch to handle potential errors
+      tryCatch({
+        # Create the adjacency matrix
+        n_rows <- n_cols <- unique(subset_data$dim)
+        adj <- sparseMatrix(
+          i    = subset_data$Row + 1,
+          j    = subset_data$Column + 1,
+          dims = c(n_rows, n_cols)
+        )
+        
+        # Create the graph and find the largest connected component (LCC)
+        g <- graph_from_adjacency_matrix(adj, mode = "undirected", diag = FALSE)
+        comps <- components(g, mode = "weak")
+        big <- which.max(comps$csize)
+        g_lcc <- induced_subgraph(g, V(g)[comps$membership == big])
+        
+        # 2. Check if the size of the LCC is less than 11
+        if (vcount(g_lcc) < 11) {
+          # If so, plot the specified message and skip the analysis
+          plot(1, type = "n", axes = FALSE, xlab = "", ylab = "")
+          title(main = well)
+          text(1, 1, "Size of largest\nconnected component < 11", col = "red", cex = 0.9)
+        } else {
+          # --- Proceed with ASE only if LCC size is 11 or greater ---
+          
+          # Perform Adjacency Spectral Embedding (ASE) on the LCC
+          ase <- full.ase(g_lcc, 10)
+          
+          # Find the elbow to determine the embedding dimension
+          elb <- getElbows(ase$eval, plot = F)
+          
+          if (length(elb) < 2) {
+            stop("Embedding dimension is less than 2.")
+          }
+          
+          embedding_dim <- elb[2]
+          
+          # --- Conditional Plotting ---
+          
+          # 3. If the embedding dimension is 2, create a 2D plot
+          if (embedding_dim == 2) {
+            plot(ase$Xhat[, 1], ase$Xhat[, 2], 
+                 main = well, 
+                 xlab = "Dimension 1", 
+                 ylab = "Dimension 2",
+                 pch = 16,
+                 col = "blue")
+          } 
+          # 4. If the embedding dimension is 3 or more, create a 3D plot
+          else if (embedding_dim >= 3) {
+            scatterplot3d(
+              x = ase$Xhat[, 1], 
+              y = ase$Xhat[, 2], 
+              z = ase$Xhat[, 3],
+              main = well,
+              xlab = "Dim 1",
+              ylab = "Dim 2",
+              zlab = "Dim 3",
+              color = "blue",
+              pch = 16,
+              type = "p",
+              grid = TRUE,
+              box = TRUE
+            )
+          } 
+          # Handle cases where the dimension is less than 2
+          else {
+            plot(1, type = "n", axes = FALSE, xlab = "", ylab = "")
+            title(main = well)
+            text(1, 1, paste("Embedding dim < 2\n(dim =", embedding_dim, ")"), col = "orange")
+          }
+        }
+        
+      }, error = function(e) {
+        # If any other error occurs, plot a placeholder with the error message
+        plot(1, type = "n", axes = FALSE, xlab = "", ylab = "")
+        title(main = well)
+        text(1, 1, "An error occurred", col = "red", cex = 0.8)
+        message(paste("Error processing", well, ":", e$message))
+      })
+    }
+    
+    # --- Add the Main Title to the Entire Figure ---
+    # Use mtext() to write the extracted path part in the outer margin (top)
+    mtext(extract_path_part(file), 
+          side = 3,       # 3 = top
+          line = 1,       # Position in the margin
+          outer = TRUE,   # Use the outer margin
+          cex = 1.5,      # Character expansion (font size)
+          font = 2)       # Font style (2 = bold)
+    
+    # Optional: Reset the plotting device layout to default
+    # par(mfrow = c(1, 1), oma = c(0, 0, 0, 0))
+    
+        
+}
+
+```
+
+## For comparison, this is embedding geometry for first 3vs 1 dataset.
+
+
+```{r,message=FALSE,warning=FALSE}
+edge_list = read.csv('/Users/tianyichen/Desktop/Research /PhDresearch/Hopkins_Organoid/Codes/R/adjacency_edges.csv')
+filenames = unique(edge_list$File)
+
+
+for (file in filenames) {
+  par(mfrow = c(2, 3), mar = c(3, 3, 3, 1), oma = c(4, 0, 3, 0))
+  
+  # Define the list of wells to iterate over
+  well_list <- paste0("well", sprintf("%03d", 0:5))
+  
+  # --- Main Loop ---
+  for (well in well_list) {
+    
+    # 1. Subset the data for the current file and well
+    subset_data <- subset(edge_list, File == file & Well == well)
+    
+    # Initial check for any data at all
+    if (nrow(subset_data) == 0) {
+      plot(1, type = "n", axes = FALSE, xlab = "", ylab = "")
+      title(main = well)
+      text(1, 1, "No data available", col = "red")
+      next # Move to the next well
+    }
+    
+    # --- Graph Construction and ASE ---
+    # This block is wrapped in tryCatch to handle potential errors
+    tryCatch({
+      # Create the adjacency matrix
+      n_rows <- n_cols <- unique(subset_data$dim)
+      adj <- sparseMatrix(
+        i    = subset_data$Row + 1,
+        j    = subset_data$Column + 1,
+        dims = c(n_rows, n_cols)
+      )
+      
+      # Create the graph and find the largest connected component (LCC)
+      g <- graph_from_adjacency_matrix(adj, mode = "undirected", diag = FALSE)
+      comps <- components(g, mode = "weak")
+      big <- which.max(comps$csize)
+      g_lcc <- induced_subgraph(g, V(g)[comps$membership == big])
+      
+      # 2. Check if the size of the LCC is less than 11
+      if (vcount(g_lcc) < 11) {
+        # If so, plot the specified message and skip the analysis
+        plot(1, type = "n", axes = FALSE, xlab = "", ylab = "")
+        title(main = well)
+        text(1, 1, "Size of largest\nconnected component < 11", col = "red", cex = 0.9)
+      } else {
+        # --- Proceed with ASE only if LCC size is 11 or greater ---
+        
+        # Perform Adjacency Spectral Embedding (ASE) on the LCC
+        ase <- full.ase(g_lcc, 10)
+        
+        # Find the elbow to determine the embedding dimension
+        elb <- getElbows(ase$eval, plot = F)
+        
+        if (length(elb) < 2) {
+          stop("Embedding dimension is less than 2.")
+        }
+        
+        embedding_dim <- elb[2]
+        
+        # --- Conditional Plotting ---
+        
+        # 3. If the embedding dimension is 2, create a 2D plot
+        if (embedding_dim == 2) {
+          plot(ase$Xhat[, 1], ase$Xhat[, 2], 
+               main = well, 
+               xlab = "Dimension 1", 
+               ylab = "Dimension 2",
+               pch = 16,
+               col = "blue")
+        } 
+        # 4. If the embedding dimension is 3 or more, create a 3D plot
+        else if (embedding_dim >= 3) {
+          scatterplot3d(
+            x = ase$Xhat[, 1], 
+            y = ase$Xhat[, 2], 
+            z = ase$Xhat[, 3],
+            main = well,
+            xlab = "Dim 1",
+            ylab = "Dim 2",
+            zlab = "Dim 3",
+            color = "blue",
+            pch = 16,
+            type = "p",
+            grid = TRUE,
+            box = TRUE
+          )
+        } 
+        # Handle cases where the dimension is less than 2
+        else {
+          plot(1, type = "n", axes = FALSE, xlab = "", ylab = "")
+          title(main = well)
+          text(1, 1, paste("Embedding dim < 2\n(dim =", embedding_dim, ")"), col = "orange")
+        }
+      }
+      
+    }, error = function(e) {
+      # If any other error occurs, plot a placeholder with the error message
+      plot(1, type = "n", axes = FALSE, xlab = "", ylab = "")
+      title(main = well)
+      text(1, 1, "An error occurred", col = "red", cex = 0.8)
+      message(paste("Error processing", well, ":", e$message))
+    })
+  }
+  
+  # --- Add the Main Title to the Entire Figure ---
+  # Use mtext() to write the extracted path part in the outer margin (top)
+  mtext(extract_path_part(file), 
+        side = 3,       # 3 = top
+        line = 1,       # Position in the margin
+        outer = TRUE,   # Use the outer margin
+        cex = 1.5,      # Character expansion (font size)
+        font = 2)       # Font style (2 = bold)
+  
+  # Optional: Reset the plotting device layout to default
+  # par(mfrow = c(1, 1), oma = c(0, 0, 0, 0))
+  
+  
+}
+
+```
+
+
+
+
