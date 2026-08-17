@@ -1,4 +1,33 @@
+# RStudio
 .Rproj.user
 .Rhistory
 .RData
 .Ruserdata
+
+# OS
+.DS_Store
+
+# PDFs and images
+*.pdf
+*.png
+*.jpg
+*.jpeg
+
+# Data files
+*.csv
+*.RData
+*.rds
+*.RDS
+*.h5
+*.hdf5
+*.npy
+*.npz
+*.pkl
+*.parquet
+
+# HTML output
+*.html
+
+# Large notebook outputs
+*.snapshot
+*.rdf

@@ -2,6 +2,7 @@ edge_list = read_csv("~/Desktop/Research /PhDresearch/Hopkins_Organoid/MO VS SO_
 filenames = unique(edge_list$File)
 filenames = filenames[-2]
 
+filenames
 for (file in filenames) {
   par(mfrow = c(2, 3), mar = c(3, 3, 3, 1), oma = c(4, 0, 3, 0))
   
@@ -46,6 +47,20 @@ for (file in filenames) {
         title(main = well)
         text(1, 1, "Size of largest\nconnected component < 11", col = "red", cex = 0.9)
       } else {
+        
+        # --- CALCULATE DENSITY MATRIX ---
+        # Get dense matrix of LCC for the function
+        A_lcc <- as.matrix(as_adjacency_matrix(g_lcc))
+        dens_mat <- get_clique_density_matrix(A_lcc)
+        
+        # Format the matrix text for the legend
+        mat_text <- c(
+          paste("CC:", sprintf("%.2f", dens_mat[1,1])),
+          paste("CP:", sprintf("%.2f", dens_mat[1,2])),
+          paste("PP:", sprintf("%.2f", dens_mat[2,2]))
+        )
+        
+        
         # --- Proceed with ASE only if LCC size is 11 or greater ---
         
         # Perform Adjacency Spectral Embedding (ASE) on the LCC
@@ -58,8 +73,7 @@ for (file in filenames) {
           stop("Embedding dimension is less than 2.")
         }
         
-        embedding_dim <- 2
-        
+        embedding_dim <- elb[2]
         # --- Conditional Plotting ---
         
         # 3. If the embedding dimension is 2, create a 2D plot
@@ -70,6 +84,9 @@ for (file in filenames) {
                ylab = "Dimension 2",
                pch = 16,
                col = "blue")
+          
+          legend("topright", legend = mat_text, bty = "n", cex = 2, title="Density")
+          
         } 
         # 4. If the embedding dimension is 3 or more, create a 3D plot
         else if (embedding_dim >= 3) {
@@ -87,6 +104,12 @@ for (file in filenames) {
             grid = TRUE,
             box = TRUE
           )
+          
+          legend("topright", 
+                 legend = mat_text, bty = "n", 
+                 cex = 2, 
+                 title="Density",
+                 inset=c(0.05, 0))
         } 
         # Handle cases where the dimension is less than 2
         else {
@@ -119,3 +142,95 @@ for (file in filenames) {
   
   
 }
+
+
+# --- PART 1: Calculate Average per File ---
+
+# Initialize list to store results per file
+file_averages <- list()
+
+for (file in filenames) {
+  
+  file_key <- extract_path_part(file)
+  
+  # List to store density matrices for valid wells in this specific file
+  valid_matrices <- list()
+  well_list <- paste0("well", sprintf("%03d", 0:5))
+  
+  for (well in well_list) {
+    subset_data <- subset(edge_list, File == file & Well == well)
+    
+    if (nrow(subset_data) == 0) next
+    
+    tryCatch({
+      # Construct Graph
+      n_rows <- n_cols <- unique(subset_data$dim)
+      adj <- sparseMatrix(
+        i    = subset_data$Row + 1,
+        j    = subset_data$Column + 1,
+        dims = c(n_rows, n_cols)
+      )
+      
+      g <- graph_from_adjacency_matrix(adj, mode = "undirected", diag = FALSE)
+      
+      # Get LCC
+      comps <- components(g, mode = "weak")
+      g_lcc <- induced_subgraph(g, V(g)[comps$membership == which.max(comps$csize)])
+      
+      # Filter by size >= 11
+      if (vcount(g_lcc) >= 11) {
+        A_lcc <- as.matrix(as_adjacency_matrix(g_lcc))
+        dens_mat <- get_clique_density_matrix(A_lcc)
+        valid_matrices[[length(valid_matrices) + 1]] <- dens_mat
+      }
+      
+    }, error = function(e) {
+      # Silent error handling for cleanliness
+    })
+  }
+  
+  # Calculate Average for this File
+  if (length(valid_matrices) > 0) {
+    avg_matrix <- Reduce("+", valid_matrices) / length(valid_matrices)
+    file_averages[[file_key]] <- avg_matrix
+  } else {
+    file_averages[[file_key]] <- NA
+  }
+}
+
+
+# --- PART 2: Aggregate by Experiment Group ---
+
+target_groups <- c("M07357", "M08438", "M07359")
+group_averages <- list()
+
+for (group in target_groups) {
+  
+  # 1. Find all file keys that start with this group ID (e.g., "M07357/...")
+  matching_keys <- grep(paste0("^", group), names(file_averages), value = TRUE)
+  
+  # 2. Extract the matrices, filtering out any NA entries
+  group_matrices <- file_averages[matching_keys]
+  group_matrices <- group_matrices[ !sapply(group_matrices, function(x) all(is.na(x))) ]
+  
+  # 3. Calculate the group average
+  if (length(group_matrices) > 0) {
+    group_mean <- Reduce("+", group_matrices) / length(group_matrices)
+    group_averages[[group]] <- group_mean
+  } else {
+    group_averages[[group]] <- NA
+  }
+}
+
+# --- Output Results ---
+print(names(file_averages)) # Printing names to verify keys
+
+print(group_averages)
+
+
+
+
+
+
+
+

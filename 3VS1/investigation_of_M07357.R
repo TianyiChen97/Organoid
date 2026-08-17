@@ -42,7 +42,7 @@ plot(g_lcc,
      edge.arrow.size = 0.25) 
 plot(g_lcc,vertex.label.cex = 0.5,vertex.size = 0.5)
 
-largest_clqs <- largest_cliques(g_lcc)
+largest_clqs <- largest_cliques(g_lcc) # there two large cliques with 1 vertex difference This implies that you have a core of 79 vertices that are all fully connected to each other. Both vertex 22 and vertex 110 are connected to those 79 vertices, but 22 and 110 are likely not connected to each other. If they were connected, you would have had one single clique of size 81.
 clique_v = union(largest_clqs[[1]],largest_clqs[[2]])
 all_v <- V(g_lcc)
 periphery_v <- setdiff(all_v, clique_v)
